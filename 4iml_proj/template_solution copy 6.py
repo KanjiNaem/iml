@@ -101,10 +101,10 @@ def get_data(**kwargs):
 
     return train_data_input, train_data_label, test_data_input
 
-def stitch_output(input, output):
-    return output.clone().clamp(0, 255)
+def stitch_output(input, output): # turns out they only grade the center square so whatever
+    # return output.clone().clamp(0, 255)
     combined = input.clone()
-    combined[:, :, 10:18, 10:18] = output.clone()
+    combined[:, :, 10:18, 10:18] = output[:, :, 10:18, 10:18].clone()
     return combined.clamp(0, 255)
 
 def train_model(train_data_input, train_data_label, **kwargs):
@@ -147,13 +147,15 @@ def train_model(train_data_input, train_data_label, **kwargs):
 
     # TODO: The value of n_epochs is just a placeholder and likely needs to be
     # changed
-    n_epochs = 30
+    n_epochs = 20
 
     for epoch in range(n_epochs):
         for x, y in tqdm(
             data_loader, desc=f"Training Epoch {epoch}", leave=False
         ):
             x, y = x.to(device), y.to(device)
+            # mask = make_center_mask(x)
+            # x = torch.cat([x, mask], dim=1)
             optimizer.zero_grad()
             output = stitch_output(x, model(x))
             loss = criterion(output, y)
@@ -198,6 +200,8 @@ def cross_validate(dataset, n_splits, n_epochs):
         for epoch in range(n_epochs):
             for x, y in tqdm(train_loader, desc=f"Training {epoch}", leave=False):
                 x, y = x.to(device), y.to(device)
+                # mask = make_center_mask(x)
+                # x = torch.cat([x, mask], dim=1)
                 optimizer.zero_grad()
                 output = stitch_output(x, model(x))
                 loss = criterion(output, y)
@@ -209,6 +213,8 @@ def cross_validate(dataset, n_splits, n_epochs):
         with torch.no_grad():
             for x, y in tqdm(val_loader, desc="Validating", leave=False):
                 x, y = x.to(device), y.to(device)
+                # mask = make_center_mask(x)
+                # x = torch.cat([x, mask], dim=1)
                 output = stitch_output(x, model(x))
                 loss = criterion(output, y)
                 val_loss += loss.item()
@@ -228,56 +234,22 @@ class Model(nn.Module):
         """
         super().__init__()
 
-        # self.norm1 = nn.BatchNorm2d(1)
-        # 1*28*28
-        # self.conv1 = nn.Conv2d(
-        #     in_channels=1,
-        #     out_channels=8,
-        #     kernel_size=3,
-        #     stride=2,
-        #     padding=1
-        # )
-        # # 8*14*14
-        # self.pool1 = nn.MaxPool2d(
-        #     kernel_size=2,
-        #     stride=2
-        # )
-        # # self.norm2 = nn.BatchNorm2d(8)
-        # # 8*7*7
-        # self.conv2 = nn.Conv2d(
-        #     in_channels=8,
-        #     out_channels=64,
-        #     kernel_size=3,
-        #     stride=2,
-        #     padding=1
-        # )
-        # # 64*4*4
-        # self.pool2 = nn.MaxPool2d(
-        #     kernel_size=4,
-        #     stride=4
-        # )
+        self.enc = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+        )
 
-        n0 = 784
-        n1 = 500
-        n2 = 300
-        n3 = 100
-        n4 = 200
-        n5 = 784
-
-        self.norm1 = nn.BatchNorm1d(n0)
-        self.fc1 = nn.Linear(n0, n1)
-
-        self.norm2 = nn.BatchNorm1d(n1)
-        self.fc2 = nn.Linear(n1, n2)
-
-        self.norm3 = nn.BatchNorm1d(n2)
-        self.fc3 = nn.Linear(n2, n3)
-
-        self.norm4 = nn.BatchNorm1d(n3)
-        self.fc4 = nn.Linear(n3, n4)
-
-        self.norm5 = nn.BatchNorm1d(n4)
-        self.fc5 = nn.Linear(n4, n5)
+        self.dec = nn.Sequential(
+            # nn.BatchNorm1d(128 * 7 * 7),
+            nn.Linear(128 * 7 * 7, 784),
+            nn.ReLU(),
+        )
 
     def forward(self, x):
         """
@@ -287,42 +259,13 @@ class Model(nn.Module):
 
         output: x: torch.Tensor, the output of the model
         """
-        # Flatten the image in the last two dimensions
-        # x = x.view(x.shape[0], 1, 28, 28)
 
-        # # x = self.norm1(x)
-        # x = self.conv1(x)
-        # x = F.leaky_relu(x)
-        # x = self.pool1(x)
-
-        # # x = self.norm2(x)
-        # x = self.conv2(x)
-        # x = F.leaky_relu(x)
-        # x = self.pool2(x)
+        x = self.enc(x)
 
         x = x.reshape(x.shape[0], -1)
 
-        x = self.norm1(x)
-        x = self.fc1(x)
-        x = F.leaky_relu(x)
+        x = self.dec(x)
 
-        x = self.norm2(x)
-        x = self.fc2(x)
-        x = F.leaky_relu(x)
-
-        x = self.norm3(x)
-        x = self.fc3(x)
-        x = F.leaky_relu(x)
-
-        x = self.norm4(x)
-        x = self.fc4(x)
-        x = F.leaky_relu(x)
-
-        x = self.norm5(x)
-        x = self.fc5(x)
-        x = F.leaky_relu(x)
-
-        # Reshape the image to the original shape
         x = x.view(x.shape[0], 1, 28, 28)
 
         return x
@@ -418,10 +361,12 @@ def main():
     test_model(model, test_data_input)
 
     # kfold cross-validation
-    cross_validate(TensorDataset(train_data_input, train_data_label), n_splits=2, n_epochs=30)
+    cross_validate(TensorDataset(train_data_input, train_data_label), n_splits=2, n_epochs=20)
 
     return None
 
 
 if __name__ == "__main__":
     main()
+
+# 999, 745 -> 4107

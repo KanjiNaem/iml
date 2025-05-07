@@ -107,6 +107,20 @@ def stitch_output(input, output):
     combined[:, :, 10:18, 10:18] = output.clone()
     return combined.clamp(0, 255)
 
+def make_center_mask(tensor: torch.Tensor, invert: bool = False) -> torch.Tensor:
+    mask = torch.ones_like(tensor)
+    mask[:, :, 10:18, 10:18] = 0
+    if invert:
+        mask = 1.0 - mask
+    return mask
+
+def center_patch_loss(output, target):
+        # Get only the center 8x8 patch (positions 10:18, 10:18)
+        output_center = output[:, :, 10:18, 10:18]
+        target_center = target[:, :, 10:18, 10:18]
+        # Calculate MSE loss on only the center patch
+        return F.mse_loss(output_center, target_center)
+
 def train_model(train_data_input, train_data_label, **kwargs):
     """
     Train the model. Fill in the details of the data loader, the loss function,
@@ -127,7 +141,7 @@ def train_model(train_data_input, train_data_label, **kwargs):
 
     # TODO: Dummy criterion - change this to the correct loss function
     # https://pytorch.org/docs/stable/nn.html#loss-functions
-    criterion = torch.nn.MSELoss()
+    criterion = center_patch_loss
     # TODO: Dummy optimizer - change this to a more suitable optimizer
     optimizer = torch.optim.Adam(model.parameters())
 
@@ -154,6 +168,8 @@ def train_model(train_data_input, train_data_label, **kwargs):
             data_loader, desc=f"Training Epoch {epoch}", leave=False
         ):
             x, y = x.to(device), y.to(device)
+            # mask = make_center_mask(x)
+            # x = torch.cat([x, mask], dim=1)
             optimizer.zero_grad()
             output = stitch_output(x, model(x))
             loss = criterion(output, y)
@@ -198,6 +214,8 @@ def cross_validate(dataset, n_splits, n_epochs):
         for epoch in range(n_epochs):
             for x, y in tqdm(train_loader, desc=f"Training {epoch}", leave=False):
                 x, y = x.to(device), y.to(device)
+                # mask = make_center_mask(x)
+                # x = torch.cat([x, mask], dim=1)
                 optimizer.zero_grad()
                 output = stitch_output(x, model(x))
                 loss = criterion(output, y)
@@ -209,6 +227,8 @@ def cross_validate(dataset, n_splits, n_epochs):
         with torch.no_grad():
             for x, y in tqdm(val_loader, desc="Validating", leave=False):
                 x, y = x.to(device), y.to(device)
+                # mask = make_center_mask(x)
+                # x = torch.cat([x, mask], dim=1)
                 output = stitch_output(x, model(x))
                 loss = criterion(output, y)
                 val_loss += loss.item()
@@ -257,27 +277,57 @@ class Model(nn.Module):
         #     stride=4
         # )
 
-        n0 = 784
-        n1 = 500
-        n2 = 300
-        n3 = 100
-        n4 = 200
-        n5 = 784
+        # n0 = 784
+        # n1 = 500
+        # n2 = 300
+        # n3 = 100
+        # n4 = 200
+        # n5 = 784
 
-        self.norm1 = nn.BatchNorm1d(n0)
-        self.fc1 = nn.Linear(n0, n1)
+        # self.norm1 = nn.BatchNorm1d(n0)
+        # self.fc1 = nn.Linear(n0, n1)
 
-        self.norm2 = nn.BatchNorm1d(n1)
-        self.fc2 = nn.Linear(n1, n2)
+        # self.norm2 = nn.BatchNorm1d(n1)
+        # self.fc2 = nn.Linear(n1, n2)
 
-        self.norm3 = nn.BatchNorm1d(n2)
-        self.fc3 = nn.Linear(n2, n3)
+        # self.norm3 = nn.BatchNorm1d(n2)
+        # self.fc3 = nn.Linear(n2, n3)
 
-        self.norm4 = nn.BatchNorm1d(n3)
-        self.fc4 = nn.Linear(n3, n4)
+        # self.norm4 = nn.BatchNorm1d(n3)
+        # self.fc4 = nn.Linear(n3, n4)
 
-        self.norm5 = nn.BatchNorm1d(n4)
-        self.fc5 = nn.Linear(n4, n5)
+        # self.norm5 = nn.BatchNorm1d(n4)
+        # self.fc5 = nn.Linear(n4, n5)
+
+        self.enc = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+        )
+
+        self.dilate = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=2, dilation=2),
+            nn.ReLU(),
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=4, dilation=4),
+            nn.ReLU(),
+        )
+
+        self.up1 = nn.ConvTranspose2d(128, 128, kernel_size=2, stride=2)
+        self.dec1 = nn.Sequential(
+            nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+        )
+        self.up2 = nn.ConvTranspose2d(64, 64, kernel_size=2, stride=2)
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(64, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 1, kernel_size=1),
+        )
 
     def forward(self, x):
         """
@@ -300,30 +350,42 @@ class Model(nn.Module):
         # x = F.leaky_relu(x)
         # x = self.pool2(x)
 
-        x = x.reshape(x.shape[0], -1)
+        # x = x.reshape(x.shape[0], -1)
 
-        x = self.norm1(x)
-        x = self.fc1(x)
-        x = F.leaky_relu(x)
+        # x = self.norm1(x)
+        # x = self.fc1(x)
+        # x = F.leaky_relu(x)
 
-        x = self.norm2(x)
-        x = self.fc2(x)
-        x = F.leaky_relu(x)
+        # x = self.norm2(x)
+        # x = self.fc2(x)
+        # x = F.leaky_relu(x)
 
-        x = self.norm3(x)
-        x = self.fc3(x)
-        x = F.leaky_relu(x)
+        # x = self.norm3(x)
+        # x = self.fc3(x)
+        # x = F.leaky_relu(x)
 
-        x = self.norm4(x)
-        x = self.fc4(x)
-        x = F.leaky_relu(x)
+        # x = self.norm4(x)
+        # x = self.fc4(x)
+        # x = F.leaky_relu(x)
 
-        x = self.norm5(x)
-        x = self.fc5(x)
-        x = F.leaky_relu(x)
+        # x = self.norm5(x)
+        # x = self.fc5(x)
+        # x = F.leaky_relu(x)
+
+        x = self.enc(x)
+
+        x = self.dilate(x)
+        x = self.up1(x)
+
+        # s1 = F.interpolate(e, size=(14, 14), mode="nearest")
+        x = self.dec1(x)
+
+        x = self.up2(x)
+        # s2 = F.interpolate(d2, size=(28, 28), mode="nearest")
+        x = self.dec2(x)
 
         # Reshape the image to the original shape
-        x = x.view(x.shape[0], 1, 28, 28)
+        # x = x.view(x.shape[0], 1, 28, 28)
 
         return x
 
